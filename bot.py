@@ -24,6 +24,11 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("Falta la variable de entorno TELEGRAM_BOT_TOKEN.")
+if not GEMINI_API_KEY:
+    raise ValueError("Falta la variable de entorno GEMINI_API_KEY.")
+
 # Inicializamos cliente de Gemini
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
