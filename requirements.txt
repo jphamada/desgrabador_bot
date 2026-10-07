@@ -1,0 +1,5 @@
+python-telegram-bot
+google-genai
+youtube-transcript-api
+yt-dlp
+python-dotenv

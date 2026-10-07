@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.tmp
+*.mp3
+*.ogg
+*.m4a
+*.webm
