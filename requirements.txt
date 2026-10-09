@@ -3,3 +3,4 @@ google-genai
 youtube-transcript-api
 yt-dlp
 python-dotenv
+static-ffmpeg

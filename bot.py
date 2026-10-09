@@ -4,6 +4,10 @@ import tempfile
 import asyncio
 from dotenv import load_dotenv
 
+# Inyecta los binarios estáticos de ffmpeg y ffprobe en el PATH
+import static_ffmpeg
+static_ffmpeg.add_paths()
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -72,20 +76,20 @@ def get_youtube_transcript(video_id: str):
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         transcript = None
 
-        # 1. Buscar subtítulos manuales o directos en español o inglés
+        # 1. Subtítulos manuales o directos en español o inglés
         try:
             transcript = transcript_list.find_transcript(['es', 'es-419', 'es-AR', 'es-ES', 'es-US', 'en'])
         except Exception:
             pass
 
-        # 2. Si no encuentra, buscar subtítulos automáticos
+        # 2. Subtítulos automáticos
         if not transcript:
             try:
                 transcript = transcript_list.find_generated_transcript(['es', 'es-419', 'es-AR', 'es-ES', 'en'])
             except Exception:
                 pass
 
-        # 3. Fallback: Tomar el primer subtítulo disponible y traducirlo a español
+        # 3. Fallback: traducir al español el primer idioma disponible
         if not transcript:
             try:
                 for t in transcript_list:
@@ -106,10 +110,11 @@ def get_youtube_transcript(video_id: str):
 
 def download_youtube_audio(url: str, output_path: str):
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'ba/b',
         'outtmpl': f"{output_path}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
+        'fixup': 'never',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -146,10 +151,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if message.text and ("youtube.com" in message.text or "youtu.be" in message.text):
             video_id = extract_youtube_id(message.text)
             if not video_id:
-                await status_msg.edit_text("❌ No pude reconocer el identificador del video de YouTube.")
+                await status_msg.edit_text("❌ No pude reconocer el enlace de YouTube.")
                 return
 
-            await status_msg.edit_text("🔍 Buscando subtítulos y transcripciones disponibles...")
+            await status_msg.edit_text("🔍 Buscando transcripción en YouTube...")
             transcript_text = get_youtube_transcript(video_id)
 
             if transcript_text:
@@ -159,7 +164,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=build_keyboard()
                 )
             else:
-                await status_msg.edit_text("⬇️ Sin subtítulos disponibles. Descargando audio nativo del video...")
+                await status_msg.edit_text("⬇️ Sin subtítulos disponibles. Descargando audio del video...")
                 with tempfile.NamedTemporaryFile(delete=False) as tmp:
                     tmp_base = tmp.name
 
@@ -170,92 +175,5 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=build_keyboard()
                 )
 
-        # Caso 2: Nota de voz o archivo de audio
+        # Caso 2: Nota de voz o audio
         elif message.voice or message.audio:
-            await status_msg.edit_text("📥 Descargando nota de voz / audio...")
-            file_obj = await (message.voice or message.audio).get_file()
-
-            suffix = ".ogg" if message.voice else ".mp3"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                local_path = tmp.name
-
-            await file_obj.download_to_drive(local_path)
-            USER_CONTEXT[user_id] = {"type": "audio_file", "path": local_path}
-
-            await status_msg.edit_text(
-                "✅ Audio recibido correctamente.\n¿Qué querés generar con este material?",
-                reply_markup=build_keyboard()
-            )
-
-        else:
-            await status_msg.edit_text("ℹ️ Enviame un enlace de YouTube o un audio para comenzar.")
-
-    except Exception as e:
-        await status_msg.edit_text(f"⚠️ Ocurrió un error al procesar el material: {str(e)}")
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = update.effective_user.id
-    action = query.data
-
-    if user_id not in USER_CONTEXT:
-        await query.edit_message_text("⚠️ No encontré material cargado en esta sesión. Enviá el link o audio de nuevo.")
-        return
-
-    prompt_instruction = PROMPTS.get(action, PROMPTS["nota"])
-    await query.edit_message_text("⚙️ Generando con Gemini...")
-
-    item = USER_CONTEXT[user_id]
-
-    try:
-        if item["type"] == "text":
-            response = ai_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    f"Instrucción: {prompt_instruction}\n\nMaterial base:\n{item['content']}"
-                ]
-            )
-            output_text = response.text
-
-        elif item["type"] == "audio_file":
-            audio_path = item["path"]
-            uploaded_file = ai_client.files.upload(file=audio_path)
-
-            response = ai_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    uploaded_file,
-                    prompt_instruction
-                ]
-            )
-            output_text = response.text
-
-        # Telegram fragmenta si excede el límite de 4096 caracteres
-        if len(output_text) > 4000:
-            for i in range(0, len(output_text), 4000):
-                await query.message.reply_text(output_text[i:i+4000])
-        else:
-            await query.message.reply_text(output_text)
-
-        await query.message.reply_text(
-            "¿Querés otra versión o derivado de este mismo material?",
-            reply_markup=build_keyboard()
-        )
-
-    except Exception as e:
-        await query.message.reply_text(f"⚠️ Error al generar el contenido: {str(e)}")
-
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.AUDIO, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-
-    print("🤖 Bot iniciado y escuchando mensajes en Telegram...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
